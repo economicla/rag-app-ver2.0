@@ -1,0 +1,357 @@
+
+"""
+
+Dependency Injection Container - Tüm dependencies'leri yönet
+
+"""
+
+import logging
+
+from app_refactored.adapters import (
+
+    JinaEmbeddingAdapter,
+
+    OpenAIEmbeddingAdapter,
+
+    PostgresDocumentAdapter,
+
+    VLLMAdapter
+
+)
+
+from app_refactored.use_cases import (
+
+    RAGQueryUseCase,
+
+    DocumentIngestionUseCase
+
+)
+
+from app_refactored.structured_extractors import VLMPDFExtractor
+ 
+logger = logging.getLogger(__name__)
+ 
+ 
+class DIContainer:
+
+    """Dependency Injection Container"""
+ 
+    def __init__(
+
+        self,
+
+        # Required parameters (no defaults)
+
+        jina_host: str,
+
+        jina_port: int,
+
+        jina_model: str,
+
+        postgres_url: str,
+
+        vllm_host: str,
+
+        vllm_port: int,
+
+        vllm_model: str,
+
+        openai_api_key: str = "",
+
+        openai_base_url: str = "https://api.openai.com/v1",
+
+        embedding_provider: str = "jina",
+
+        openai_embedding_model: str = "text-embedding-3-large",
+
+        openai_embedding_dimensions: int = 2048,
+
+        # Optional parameters (with defaults)
+
+        jina_timeout: int = 600,
+
+        jina_embed_batch_size: int = 128,
+
+        postgres_pool_size: int = 20,
+
+        postgres_max_overflow: int = 10,
+
+        vllm_timeout: int = 300,
+
+        chunk_size: int = 1000,
+
+        chunk_overlap: int = 200,
+
+        # VLM (Vision model) — ayrı config
+        vlm_host: str = "",
+        vlm_port: int = 0,
+        vlm_model: str = "",
+        vlm_timeout: int = 600,
+
+    ):
+
+        """Initialize DI Container with all configuration"""
+
+        self.config = {
+
+            'jina': {
+
+                'host': jina_host,
+
+                'port': jina_port,
+
+                'model': jina_model,
+
+                'timeout': jina_timeout,
+
+                'embed_batch_size': jina_embed_batch_size,
+
+            },
+
+            'openai': {
+                'api_key': openai_api_key,
+                'base_url': openai_base_url,
+                'embedding_model': openai_embedding_model,
+                'embedding_dimensions': openai_embedding_dimensions,
+            },
+
+            'embedding_provider': embedding_provider.lower(),
+
+            'postgres': {
+
+                'url': postgres_url,
+
+                'pool_size': postgres_pool_size,
+
+                'max_overflow': postgres_max_overflow
+
+            },
+
+            'vllm': {
+
+                'host': vllm_host,
+
+                'port': vllm_port,
+
+                'model': vllm_model,
+
+                'timeout': vllm_timeout
+
+            },
+
+            'rag': {
+
+                'chunk_size': chunk_size,
+
+                'chunk_overlap': chunk_overlap
+
+            },
+
+            'vlm': {
+                'host': vlm_host if vlm_host else vllm_host,
+                'port': vlm_port,
+                'model': vlm_model if vlm_model else vllm_model,
+                'timeout': vlm_timeout,
+            }
+
+        }
+
+        # Lazy initialization
+
+        self._embedding_service = None
+
+        self._document_repository = None
+
+        self._llm_service = None
+
+        self._rag_use_case = None
+
+        self._ingestion_use_case = None
+
+        self._vlm_extractor = None
+ 
+    def get_embedding_service(self):
+
+        """Get IEmbeddingService implementation"""
+
+        if self._embedding_service is None:
+
+            if self.config['embedding_provider'] == "openai":
+                logger.info("Initializing OpenAIEmbeddingAdapter...")
+                self._embedding_service = OpenAIEmbeddingAdapter(
+                    api_key=self.config['openai']['api_key'],
+                    base_url=self.config['openai']['base_url'],
+                    model=self.config['openai']['embedding_model'],
+                    dimensions=self.config['openai']['embedding_dimensions'],
+                    timeout=self.config['jina']['timeout'],
+                    embed_batch_size=self.config['jina']['embed_batch_size'],
+                )
+                return self._embedding_service
+
+            logger.info("Initializing JinaEmbeddingAdapter...")
+
+            self._embedding_service = JinaEmbeddingAdapter(
+
+                host=self.config['jina']['host'],
+
+                port=self.config['jina']['port'],
+
+                model=self.config['jina']['model'],
+
+                timeout=self.config['jina']['timeout'],
+
+                embed_batch_size=self.config['jina']['embed_batch_size'],
+
+            )
+
+        return self._embedding_service
+ 
+    def get_document_repository(self):
+
+        """Get IDocumentRepository implementation"""
+
+        if self._document_repository is None:
+
+            logger.info("Initializing PostgresDocumentAdapter...")
+
+            self._document_repository = PostgresDocumentAdapter(
+
+                database_url=self.config['postgres']['url'],
+
+                pool_size=self.config['postgres']['pool_size'],
+
+                max_overflow=self.config['postgres']['max_overflow']
+
+            )
+
+        return self._document_repository
+ 
+    def get_llm_service(self):
+
+        """Get ILLMService implementation"""
+
+        if self._llm_service is None:
+
+            logger.info("Initializing VLLMAdapter...")
+
+            self._llm_service = VLLMAdapter(
+
+                host=self.config['vllm']['host'],
+
+                port=self.config['vllm']['port'],
+
+                model=self.config['vllm']['model'],
+
+                timeout=self.config['vllm']['timeout'],
+
+                api_key=self.config['openai']['api_key'],
+
+            )
+
+        return self._llm_service
+ 
+    def get_rag_query_use_case(self) -> RAGQueryUseCase:
+
+        """Get RAGQueryUseCase with all dependencies injected"""
+
+        if self._rag_use_case is None:
+
+            logger.info("Initializing RAGQueryUseCase...")
+
+            self._rag_use_case = RAGQueryUseCase(
+
+                embedding_service=self.get_embedding_service(),
+
+                document_repository=self.get_document_repository(),
+
+                llm_service=self.get_llm_service()
+
+            )
+
+        return self._rag_use_case
+ 
+    def get_vlm_extractor(self) -> VLMPDFExtractor:
+
+        """Get VLMPDFExtractor — uses separate VLM config (vision model)"""
+
+        if self._vlm_extractor is None:
+
+            vlm_cfg = self.config['vlm']
+
+            logger.info(
+                f"Initializing VLMPDFExtractor: {vlm_cfg['host']}:{vlm_cfg['port']}, "
+                f"model={vlm_cfg['model']}"
+            )
+
+            self._vlm_extractor = VLMPDFExtractor(
+
+                host=vlm_cfg['host'],
+
+                port=vlm_cfg['port'],
+
+                model=vlm_cfg['model'],
+
+                timeout=vlm_cfg['timeout'],
+
+                api_key=self.config['openai']['api_key'],
+
+            )
+
+        return self._vlm_extractor
+
+    def get_document_ingestion_use_case(self) -> DocumentIngestionUseCase:
+
+        """Get DocumentIngestionUseCase with all dependencies injected"""
+
+        if self._ingestion_use_case is None:
+
+            logger.info("Initializing DocumentIngestionUseCase...")
+
+            self._ingestion_use_case = DocumentIngestionUseCase(
+
+                embedding_service=self.get_embedding_service(),
+
+                document_repository=self.get_document_repository(),
+
+                chunk_size=self.config['rag']['chunk_size'],
+
+                chunk_overlap=self.config['rag']['chunk_overlap'],
+
+                vlm_extractor=self.get_vlm_extractor(),
+
+            )
+
+        return self._ingestion_use_case
+ 
+    async def close_all(self):
+
+        """Tüm services'i kapat"""
+
+        logger.info("Closing all services...")
+
+        if self._embedding_service:
+
+            await self._embedding_service.close()
+
+        if self._document_repository:
+
+            await self._document_repository.close()
+
+        if self._llm_service:
+
+            await self._llm_service.close()
+
+        logger.info("✅ All services closed")
+ 
+    async def __aenter__(self):
+
+        """Async context manager support"""
+
+        return self
+ 
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+
+        """Async context manager cleanup"""
+
+        await self.close_all()
+ 

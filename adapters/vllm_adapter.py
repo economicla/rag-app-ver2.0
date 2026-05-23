@@ -1,0 +1,392 @@
+
+"""
+
+VLLMAdapter - vLLM'yi ILLMService interface'ine adapt et
+
+OpenAI-compatible API ile async communication (text + vision)
+
+"""
+
+from typing import AsyncGenerator, List, Optional
+
+import base64
+import time
+
+import httpx
+
+import logging
+
+from pathlib import Path
+
+from app_refactored.core.interfaces import ILLMService
+ 
+logger = logging.getLogger(__name__)
+ 
+ 
+class VLLMAdapter(ILLMService):
+
+    """vLLM OpenAI-compatible async adapter with connection pooling"""
+ 
+    def __init__(
+
+        self,
+
+        host: str,
+
+        port: int,
+
+        model: str,
+
+        timeout: int = 300,
+
+        max_connections: int = 20,
+
+        api_key: str = ""
+
+    ):
+
+        """
+
+        Initialize vLLM adapter
+
+        Args:
+
+            host: vLLM host (örn: "http://10.144.100.204")
+
+            port: vLLM port (örn: 8804)
+
+            model: Model adı (örn: "openai/gpt-oss-120b")
+
+            timeout: Request timeout (saniye)
+
+            max_connections: Connection pool size
+
+        """
+
+        self.host = host.rstrip("/")
+
+        self.port = port
+
+        self.model = model
+
+        self.timeout = timeout
+
+        base = f"{self.host}:{port}" if port else self.host
+
+        self.api_base = base if base.endswith("/v1") else f"{base}/v1"
+
+        self.completions_endpoint = f"{self.api_base}/chat/completions"
+
+        self.models_endpoint = f"{self.api_base}/models"
+
+        self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+        # AsyncClient with connection pooling
+
+        self.client = httpx.AsyncClient(
+
+            timeout=httpx.Timeout(timeout),
+
+            limits=httpx.Limits(
+
+                max_connections=max_connections,
+
+                max_keepalive_connections=max_connections
+
+            )
+
+        )
+ 
+    async def generate_response(
+
+        self,
+
+        prompt: str,
+
+        system_prompt: str = "",
+
+        temperature: float = 0,
+
+        max_tokens: int = 2000,
+
+        top_p: float = 0.9
+
+    ) -> str:
+
+        """LLM'ye prompt gönder ve yanıtı al (sync response)"""
+
+        try:
+
+            messages = []
+
+            if system_prompt and system_prompt.strip():
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+            payload = {
+
+                "model": self.model,
+
+                "messages": messages,
+
+                "temperature": temperature,
+
+                "max_tokens": max_tokens,
+
+                "top_p": top_p,
+
+                "stream": False
+
+            }
+
+            t0 = time.monotonic()
+            response = await self.client.post(
+                self.completions_endpoint,
+                json=payload,
+                headers=self.headers,
+            )
+            response.raise_for_status()
+            elapsed_ms = (time.monotonic() - t0) * 1000
+
+            result = response.json()
+            answer = result['choices'][0]['message']['content']
+            usage = result.get("usage", {})
+            logger.info(
+                f"✅ LLM response: {len(answer)} chars, {elapsed_ms:.0f}ms, "
+                f"tokens={usage.get('prompt_tokens', '?')}+{usage.get('completion_tokens', '?')}"
+            )
+
+            return answer
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ LLM HTTP {e.response.status_code}: {e.response.text[:300]}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ LLM request failed: {type(e).__name__}: {e}")
+            raise
+ 
+    async def generate_vision_response(
+        self,
+        prompt: str,
+        image_paths: List[str],
+        system_prompt: str = "",
+        temperature: float = 0,
+        max_tokens: int = 4096,
+        top_p: float = 0.9,
+    ) -> str:
+        """Send images + text prompt to a VLM (e.g. Qwen3-VL) and return the response."""
+        try:
+            content: list = []
+            for img_path in image_paths:
+                raw = Path(img_path).read_bytes()
+                b64 = base64.b64encode(raw).decode("utf-8")
+                suffix = Path(img_path).suffix.lower().lstrip(".")
+                mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(suffix, "image/png")
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64}"},
+                })
+            content.append({"type": "text", "text": prompt})
+
+            messages = []
+            if system_prompt and system_prompt.strip():
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": content})
+
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "top_p": top_p,
+                "stream": False,
+            }
+
+            logger.info(f"🖼️ Vision request: {len(image_paths)} image(s), model={self.model}")
+            response = await self.client.post(
+                self.completions_endpoint,
+                json=payload,
+                headers=self.headers,
+            )
+            response.raise_for_status()
+            result = response.json()
+            answer = result["choices"][0]["message"]["content"]
+            logger.info(f"✅ Vision response ({len(answer)} chars)")
+            return answer
+
+        except Exception as e:
+            logger.error(f"❌ Vision response failed: {str(e)}")
+            raise
+
+    async def stream_response(
+
+        self,
+
+        prompt: str,
+
+        system_prompt: str = "",
+
+        temperature: float = 0.7,
+
+        max_tokens: int = 2000,
+
+        top_p: float = 0.9
+
+    ) -> AsyncGenerator[str, None]:
+
+        """LLM'ye prompt gönder ve yanıtı stream et (real-time)"""
+
+        try:
+            # Messages dizisini oluştur
+            messages = []
+
+            #System prompt varsa ekle
+            if system_prompt.strip():
+                messages.append({
+                    "role": "system",
+                    "content": system_prompt
+                })
+
+            # User prompt ekle
+            messages.append({
+                "role": "user",
+                "content": prompt
+            })
+
+            payload = {
+
+                "model": self.model,
+
+                "messages": messages,
+
+                "temperature": temperature,
+
+                "max_tokens": max_tokens,
+
+                "top_p": top_p,
+
+                "stream": True
+
+            }
+
+            logger.info(f"Streaming request: {self.model} (temp={temperature})")
+            logger.debug(f"System Prompt: {system_prompt[:100]}..." if system_prompt else "No system prompt")
+
+            async with self.client.stream(
+
+                "POST",
+
+                self.completions_endpoint,
+
+                json=payload,
+
+                headers=self.headers,
+
+            ) as response:
+
+                response.raise_for_status()
+
+                async for line in response.aiter_lines():
+
+                    if line.startswith("data: "):
+
+                        data_str = line[6:]  # "data: " kısmını çıkar
+
+                        if data_str == "[DONE]":
+                            logger.info("✔️ Stream completed successfully")
+
+                            break
+
+                        try:
+
+                            import json
+
+                            data = json.loads(data_str)
+
+                            if 'choices' in data and len(data['choices']) > 0:
+
+                                chunk = data['choices'][0].get('delta', {}).get('content', '')
+
+                                if chunk:
+
+                                    yield chunk
+
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"⚠️ JSON decode error: {str(e)}")
+
+                            continue
+
+            logger.info("✅ Stream completed")
+
+        except Exception as e:
+
+            logger.error(f"❌ Stream response failed: {str(e)}")
+
+            raise
+ 
+    async def is_available(self) -> bool:
+
+        """vLLM servisinin çalışıp çalışmadığını kontrol et"""
+
+        try:
+
+            response = await self.client.get(
+
+                self.models_endpoint,
+
+                timeout=httpx.Timeout(5),
+
+                headers=self.headers,
+
+            )
+
+            return response.status_code == 200
+
+        except Exception as e:
+
+            logger.warning(f"vLLM health check failed: {str(e)}")
+
+            return False
+ 
+    async def get_model_name(self) -> str:
+
+        """Model adını döndür"""
+
+        return self.model
+ 
+    async def count_tokens(self, text: str) -> int:
+
+        """
+
+        Metindeki token sayısını tahmin et
+
+        Rough calculation: 1 token ≈ 4 characters
+
+        """
+
+        estimated_tokens = len(text) // 4
+
+        logger.info(f"📊 Estimated tokens: {estimated_tokens}")
+
+        return estimated_tokens
+ 
+    async def close(self):
+
+        """Client bağlantısını kapat"""
+
+        await self.client.aclose()
+
+        logger.info("✅ vLLM client closed")
+ 
+    async def __aenter__(self):
+
+        """Context manager support"""
+
+        return self
+ 
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+
+        """Context manager cleanup"""
+
+        await self.close()
+ 

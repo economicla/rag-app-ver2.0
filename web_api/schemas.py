@@ -1,0 +1,275 @@
+
+"""
+
+Pydantic Schemas - API Request/Response DTOs
+
+core/entities'deki modelleri baz alan, Pydantic compatible
+
+"""
+
+from pydantic import BaseModel, Field
+
+from typing import Any, Dict, List, Optional
+
+from datetime import datetime
+ 
+ 
+# ============ REQUEST SCHEMAS ============
+ 
+class RAGQueryRequest(BaseModel):
+
+    """RAG Sorgu Request"""
+
+    query: str = Field(..., min_length=1, max_length=5000, description="Sorgu metni")
+
+    top_k: int = Field(default=10, ge=1, le=20, description="En iyi k sonuç")
+
+    temperature: float = Field(default=0.7, ge=0.0, le=1.0, description="Yaratıcılık (0-1)")
+
+    filename: Optional[str] = Field(
+        default=None,
+        description="Sadece bu dosya adındaki chunk'larda ara (tek dosya; filenames ile birlikte verilirse filenames önceliklidir)",
+    )
+
+    filenames: Optional[List[str]] = Field(
+        default=None,
+        description="Sadece bu dosya adlarındaki chunk'larda ara (pipe'ta birden fazla doküman)",
+    )
+ 
+    class Config:
+
+        example = {
+
+            "query": "eğitim prosedürü nedir?",
+
+            "top_k": 15,
+
+            "temperature": 0.7
+
+        }
+
+
+class ScopedRAGQueryRequest(BaseModel):
+
+    """Sadece belirtilen dosya(lar)da veya koleksiyonda RAG."""
+
+    query: str = Field(..., min_length=1, max_length=5000)
+
+    filenames: Optional[List[str]] = Field(default=None, description="Dosya adları ile filtrele")
+
+    unit: Optional[str] = Field(default=None, description="Birim/departman adı ile filtrele (ör. 'krediler', 'egitim')")
+
+    collection: Optional[str] = Field(default=None, description="Koleksiyon adı ile filtrele (ör. 'kredi', 'egitim')")
+
+    top_k: int = Field(default=10, ge=1, le=20)
+
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    system_prompt: Optional[str] = Field(
+        default=None,
+        description="Doküman tipine/RAG botuna özel ek talimatlar; backend genel sistem promptunu ezmez, en alta eklenir",
+    )
+
+
+# ============ RESPONSE SCHEMAS ============
+ 
+class DocumentChunkResponse(BaseModel):
+
+    """Doküman Chunk Response"""
+
+    id: Optional[int] = None
+
+    filename: str
+
+    unit: Optional[str] = None
+
+    chunk_index: int
+
+    content: str = Field(..., description="İlk 200 karakteri gösterilir")
+
+    similarity_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    metadata: dict = Field(default_factory=dict)
+
+    created_at: Optional[datetime] = None
+
+    source_pages: Optional[str] = Field(
+        default=None,
+        description="Dokümandaki sayfa veya aralık (örn. '12' veya '3-5'); chunk metninden çıkarılır",
+    )
+ 
+    class Config:
+
+        example = {
+
+            "id": 1,
+
+            "filename": "egitim_proseduru.docx",
+
+            "chunk_index": 0,
+
+            "content": "Bu prosedür, Bankamızın strateji ve hedefleri çerçevesinde...",
+
+            "similarity_score": 0.85,
+
+            "metadata": {"file_type": "docx", "chunk_size": 1000},
+
+            "source_pages": "4",
+
+        }
+ 
+ 
+class RAGQueryResponse(BaseModel):
+
+    """RAG Sorgu Yanıtı"""
+
+    question: str
+
+    answer: str
+
+    sources: List[DocumentChunkResponse] = Field(default_factory=list)
+
+    model: str
+
+    timestamp: datetime
+
+    debug_info: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Retrieval debug: preferred_type, retrieval_mode, filtered_count, top3_chunks"
+    )
+ 
+    class Config:
+
+        example = {
+
+            "question": "nakdi risk ne kadar?",
+
+            "answer": "Grubun toplam nakdi riski...",
+
+            "sources": [
+
+                {
+
+                    "filename": "teklif_ozeti.pdf",
+
+                    "chunk_index": 0,
+
+                    "similarity_score": 0.85
+
+                }
+
+            ],
+
+            "model": "openai/gpt-oss-120b",
+
+            "timestamp": "2026-02-06T12:00:00",
+
+            "debug_info": {
+
+                "preferred_type": "Teklif Özeti",
+
+                "retrieval_mode": "STRICT_FILTERED",
+
+                "filtered_count": 12,
+
+                "top3_chunks": [
+
+                    {"rank": 1, "filename": "teklif.pdf", "doc_type": "Teklif Özeti", "similarity_score": 0.85}
+
+                ]
+
+            }
+
+        }
+ 
+ 
+class DocumentIngestionResponse(BaseModel):
+
+    """Doküman Yükleme Yanıtı"""
+
+    status: str = Field(..., description="success or error")
+
+    filename: str
+
+    chunks_ingested: int
+
+    total_tokens: int
+
+    timestamp: datetime
+
+    error: Optional[str] = None
+ 
+    class Config:
+
+        example = {
+
+            "status": "success",
+
+            "filename": "egitim_proseduru.docx",
+
+            "chunks_ingested": 25,
+
+            "total_tokens": 6189,
+
+            "timestamp": "2026-02-06T12:00:00"
+
+        }
+ 
+ 
+class HealthCheckResponse(BaseModel):
+
+    """Health Check Yanıtı"""
+
+    status: str = Field(default="healthy")
+
+    jina_available: bool
+
+    postgres_available: bool
+
+    vllm_available: bool
+
+    vlm_available: bool = Field(default=False)
+
+    timestamp: datetime
+
+    class Config:
+
+        example = {
+
+            "status": "healthy",
+
+            "jina_available": True,
+
+            "postgres_available": True,
+
+            "vllm_available": True,
+
+            "vlm_available": True,
+
+            "timestamp": "2026-02-06T12:00:00"
+
+        }
+ 
+ 
+class ErrorResponse(BaseModel):
+
+    """Error Response"""
+
+    status: str = "error"
+
+    detail: str
+
+    timestamp: datetime
+ 
+    class Config:
+
+        example = {
+
+            "status": "error",
+
+            "detail": "Invalid query",
+
+            "timestamp": "2026-02-06T12:00:00"
+
+        }
+ 

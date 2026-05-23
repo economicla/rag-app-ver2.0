@@ -1,0 +1,33 @@
+services:
+  rag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-api
+    restart: unless-stopped
+    env_file:
+      - .env.vps
+    ports:
+      - "${RAG_API_PORT:-8005}:8005"
+    volumes:
+      - rag_logs:/app/app_refactored/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${RAG_API_PORT:-8005}/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
+  rag_logs:

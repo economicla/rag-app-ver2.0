@@ -1,0 +1,32 @@
+# Web API
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.12.5
+python-dotenv==1.0.0
+python-multipart==0.0.6
+aiofiles==23.2.1
+
+# Async HTTP clients
+httpx==0.25.2
+aiohttp
+
+# Database and cache
+SQLAlchemy==2.0.23
+asyncpg==0.31.0
+pgvector==0.2.5
+redis==7.1.1
+
+# Document parsing and preprocessing
+beautifulsoup4==4.14.3
+Markdown
+pdfplumber==0.11.9
+PyMuPDF==1.27.1
+pypdf
+python-docx==1.2.0
+openpyxl==3.1.5
+python-pptx==1.0.2
+
+# Optional utility checker tooling (id_redaction_checker)
+numpy==2.4.3
+opencv-python==4.13.0.92
+PyYAML
